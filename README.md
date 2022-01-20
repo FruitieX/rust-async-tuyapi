@@ -1,7 +1,7 @@
 # rust-tuyapi
-[![Build Status](https://github.com/EmilSodergren/rust-tuyapi/actions/workflows/mean_bean_ci.yml/badge.svg)](https://github.com/EmilSodergren/rust-tuyapi/actions/workflows/mean_bean_ci.yml)
+Rust async implementation of the Tuya API used to communicate with Tuya/Smart Life devices.
 
-Rust implementation of the Tuya API used to communicate with Tuya/Smart Life devices.
+Original sync version here: https://github.com/EmilSodergren/rust-tuyapi
 
 ## Acknowledgment
 @codetheweb for reverse enginering the protocol.
