@@ -5,14 +5,14 @@
 //! ## Example
 //! This shows how to turn on a wall socket.
 //! ```no_run
-//! # extern crate rust_tuyapi;
-//! # use rust_tuyapi::{Payload, Result, PayloadStruct,tuyadevice::TuyaDevice};
+//! # extern crate rust_async_tuyapi;
+//! # use rust_async_tuyapi::{Payload, Result, PayloadStruct,tuyadevice::TuyaDevice};
 //! # use std::net::IpAddr;
 //! # use std::str::FromStr;
 //! # use std::collections::HashMap;
 //! # use std::time::SystemTime;
 //! # use serde_json::json;
-//! # fn main() -> Result<()> {
+//! # async fn set_device() -> Result<()> {
 //! // The dps value is device specific, this socket turns on with key "1"
 //! let mut dps = HashMap::new();
 //! dps.insert("1".to_string(), json!(true));
@@ -35,7 +35,7 @@
 //!
 //! // Set the payload state on the Tuya device, an error here will contain
 //! // the error message received from the device.
-//! tuya_device.set(payload, 0)?;
+//! tuya_device.set(payload, 0).await?;
 //! # Ok(())
 //! # }
 //! ```

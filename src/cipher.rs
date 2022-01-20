@@ -39,7 +39,7 @@ impl TuyaCipher {
 
     pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
         // Different header size in version 3.1 and 3.3
-        let data = maybe_strip_header(&self.version, &data);
+        let data = maybe_strip_header(&self.version, data);
         // 3.1 is base64 encoded, 3.3 is not
         let data = match self.version {
             TuyaVersion::ThreeOne => base64::decode(&data)?,

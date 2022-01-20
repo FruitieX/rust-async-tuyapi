@@ -1,4 +1,4 @@
-use rust_tuyapi::{
+use rust_async_tuyapi::{
     mesparse::{CommandType, Message, MessageParser},
     Payload,
 };

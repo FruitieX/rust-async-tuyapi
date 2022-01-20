@@ -1,11 +1,11 @@
 [package]
-name = "rust-tuyapi"
+name = "rust-async-tuyapi"
 version = "0.8.1"
-authors = ["Emil Sodergren <EmilSodergren@users.noreply.github.com>"]
+authors = ["Emil Sodergren <EmilSodergren@users.noreply.github.com>", "Rasmus Lövegren <rasmus@lovegren.fi>"]
 edition = "2018"
-description = "This package is a rust port of the exellent NodeJS implementation by codetheweb for the Tuya API"
-homepage = "https://github.com/EmilSodergren/rust-tuyapi"
-repository = "https://github.com/EmilSodergren/rust-tuyapi"
+description = "This package is a rust port of the exellent NodeJS implementation by codetheweb for the Tuya API, adapted for async usage"
+homepage = "https://github.com/FruitieX/rust-async-tuyapi"
+repository = "https://github.com/FruitieX/rust-async-tuyapi"
 license-file = "LICENSE"
 keywords = ["tuya", "smarthome", "smartlife"]
 
@@ -27,3 +27,4 @@ openssl = { version = "0.10", features = ["vendored"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
+tokio = { version = "1", features = ["io-util", "net"] }
