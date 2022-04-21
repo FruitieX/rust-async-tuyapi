@@ -1,6 +1,6 @@
-use openssl::error::ErrorStack;
 use std::io;
 use std::str::Utf8Error;
+use block_modes::{InvalidKeyIvLength, BlockModeError};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -8,10 +8,12 @@ use thiserror::Error;
 pub enum ErrorKind {
     Base64DecodeError(#[from] base64::DecodeError),
     JsonError(#[from] serde_json::error::Error),
-    OpenSSLError(#[from] ErrorStack),
     SystemTimeError(#[from] std::time::SystemTimeError),
     TcpError(#[from] io::Error),
     Utf8Error(#[from] Utf8Error),
+
+    CryptoIv(#[from] InvalidKeyIvLength),
+    CryptoBlock(#[from] BlockModeError),
 
     #[error("parsing failed with: {0:?}")]
     ParseError(nom::error::ErrorKind),
