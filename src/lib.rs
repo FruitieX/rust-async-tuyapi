@@ -62,13 +62,13 @@ use std::convert::TryInto;
 pub type Result<T> = std::result::Result<T, ErrorKind>;
 /// The Payload enum represents a payload sent to, and recevied from the Tuya devices. It might be
 /// a struct (ser/de from json) or a plain string.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
     Struct(PayloadStruct),
     String(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DpId {
     Lower,
     Higher,
@@ -114,7 +114,7 @@ impl Display for Payload {
 
 /// The PayloadStruct is Serialized to json and sent to the device. The dps field contains the
 /// actual commands to set and are device specific.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct PayloadStruct {
     #[serde(rename = "devId")]
     pub dev_id: String,

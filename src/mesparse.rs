@@ -22,6 +22,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use std::cmp::PartialEq;
 use std::convert::TryInto;
 use std::fmt;
+use std::mem::size_of;
 use std::str::FromStr;
 
 const UDP_KEY: &str = "yGAdlopoPVldABfn";
@@ -32,21 +33,21 @@ lazy_static! {
 }
 
 /// Human readable definitions of command bytes.
-#[derive(Debug, FromPrimitive, ToPrimitive, Clone, PartialEq)]
+#[derive(Debug, FromPrimitive, ToPrimitive, Clone, PartialEq, Eq)]
 pub enum CommandType {
     Udp = 0,
     ApConfig = 1,
     Active = 2,
-    Bind = 3,
-    RenameGw = 4,
-    RenameDevice = 5,
+    SessKeyNegStart = 3,
+    SessKeyNegResp = 4,
+    SessKeyNegFinish = 5,
     Unbind = 6,
     Control = 7,
     Status = 8,
     HeartBeat = 9,
     DpQuery = 10,
     QueryWifi = 11,
-    TokenBind = 12,
+    UpdateDps = 12,
     ControlNew = 13,
     EnableWifi = 14,
     DpQueryNew = 16,
@@ -70,10 +71,27 @@ pub enum CommandType {
     Error = 255,
 }
 
+impl CommandType {
+    pub fn needs_protocol_header(&self) -> bool {
+        !matches!(
+            self,
+            CommandType::SessKeyNegStart
+                | CommandType::SessKeyNegResp
+                | CommandType::SessKeyNegFinish
+                | CommandType::HeartBeat
+                | CommandType::DpQuery
+                | CommandType::UpdateDps
+                | CommandType::DpQueryNew
+        )
+    }
+}
+
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) enum TuyaVersion {
     ThreeOne,
     ThreeThree,
+    ThreeFour,
 }
 
 impl TuyaVersion {
@@ -81,6 +99,7 @@ impl TuyaVersion {
         match &self {
             TuyaVersion::ThreeOne => b"3.1",
             TuyaVersion::ThreeThree => b"3.3",
+            TuyaVersion::ThreeFour => b"3.4",
         }
     }
 }
@@ -89,22 +108,12 @@ impl FromStr for TuyaVersion {
     type Err = ErrorKind;
 
     fn from_str(s: &str) -> Result<Self> {
-        let version: Vec<&str> = s.split('.').collect();
-        if version.len() > 1 && version[0].ends_with('3') {
-            if version[1] == "1" {
-                return Ok(TuyaVersion::ThreeOne);
-            } else if version[1] == "3" {
-                return Ok(TuyaVersion::ThreeThree);
-            }
-            return Err(ErrorKind::VersionError(
-                version[0].to_string(),
-                version[1].to_string(),
-            ));
+        match s {
+            "3.1" => Ok(TuyaVersion::ThreeOne),
+            "3.3" => Ok(TuyaVersion::ThreeThree),
+            "3.4" => Ok(TuyaVersion::ThreeFour),
+            _ => Err(ErrorKind::VersionError(s.to_string())),
         }
-        Err(ErrorKind::VersionError(
-            "Unknown".to_string(),
-            "Unknown".to_string(),
-        ))
     }
 }
 
@@ -112,7 +121,7 @@ impl FromStr for TuyaVersion {
 /// serialized to and deserialized from JSON. The sequence number, if sent in a command, will
 /// be included in the response to be able to connect command and response. The return code is
 /// only included if the Message is a response from a device.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Message {
     pub payload: Payload,
     pub command: Option<CommandType>,
@@ -177,8 +186,18 @@ impl MessageParser {
             Some(_) => 4_u32,
             None => 0_u32,
         };
+        let msg_end_size = match self.version {
+            TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => {
+                // u32:crc + u32:suffix
+                size_of::<u32>() + size_of::<u32>()
+            }
+            TuyaVersion::ThreeFour => {
+                // 32:hmac + uint32:suffix
+                32 + size_of::<u32>()
+            }
+        };
         encoded.extend(
-            (payload.len() as u32 + 8_u32 + ret_len)
+            (payload.len() as u32 + msg_end_size as u32 + ret_len)
                 .to_be_bytes()
                 .iter(),
         );
@@ -186,7 +205,15 @@ impl MessageParser {
             encoded.extend(&ret_code.to_be_bytes());
         }
         encoded.extend(payload);
-        encoded.extend(crc(&encoded).to_be_bytes().iter());
+        match self.version {
+            TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => {
+                encoded.extend(crc(&encoded).to_be_bytes().iter());
+            }
+            TuyaVersion::ThreeFour => {
+                encoded.extend(self.cipher.hmac(&encoded)?.iter());
+                // encoded.extend(self.cipher.hmac(&encoded)?.iter().flat_map(|b| b.to_be_bytes()));
+            }
+        }
         encoded.extend_from_slice(&*SUFFIX_BYTES);
         debug!(
             "Encoded message ({}):\n{}",
@@ -206,24 +233,43 @@ impl MessageParser {
                     mes.payload.clone().try_into()
                 }
             }
-            TuyaVersion::ThreeThree => match mes.command {
-                Some(CommandType::DpQuery) | Some(CommandType::DpRefresh) => {
+            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => match mes.command {
+                Some(ref cmd) if cmd.needs_protocol_header() => {
+                    self.create_payload_with_header(mes.payload.clone().try_into()?)
+                }
+                _ => {
                     let payload: Vec<u8> = mes.payload.clone().try_into()?;
                     self.cipher.encrypt(&payload)
                 }
-                _ => self.create_payload_with_header(mes.payload.clone().try_into()?),
             },
         }
     }
 
     fn create_payload_with_header(&self, payload: Vec<u8>) -> Result<Vec<u8>> {
         let mut payload_with_header = Vec::new();
-        payload_with_header.extend(self.version.as_bytes());
         match self.version {
-            TuyaVersion::ThreeOne => payload_with_header.extend(vec![0; 12]),
-            TuyaVersion::ThreeThree => payload_with_header.extend(self.cipher.md5(&payload)),
+            TuyaVersion::ThreeOne => {
+                payload_with_header.extend(self.version.as_bytes());
+                payload_with_header.extend(vec![0; 12]);
+                payload_with_header.extend(self.cipher.encrypt(&payload)?);
+            }
+            TuyaVersion::ThreeThree => {
+                payload_with_header.extend(self.version.as_bytes());
+                payload_with_header.extend(self.cipher.md5(&payload));
+                payload_with_header.extend(self.cipher.encrypt(&payload)?);
+            }
+            TuyaVersion::ThreeFour => {
+                let payload = {
+                    let mut v = self.version.as_bytes().to_vec();
+                    v.extend(&vec![0; 12]);
+                    v.extend(&payload);
+                    v
+                };
+
+                payload_with_header.extend(self.cipher.md5(&payload));
+                payload_with_header.extend(self.cipher.encrypt(&payload)?);
+            }
         }
-        payload_with_header.extend(self.cipher.encrypt(&payload)?);
         Ok(payload_with_header)
     }
 

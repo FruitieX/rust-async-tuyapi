@@ -1,5 +1,8 @@
-use crate::mesparse:: TuyaVersion;
+use crate::mesparse::TuyaVersion;
 use crate::Result;
+use openssl::hash::MessageDigest;
+use openssl::pkey::PKey;
+use openssl::sign::Signer;
 use openssl::symm::{decrypt, encrypt, Cipher};
 
 /// TuyaCipher is a low level api for encrypting and decrypting Vec<u8>'s.
@@ -13,7 +16,7 @@ fn maybe_strip_header(version: &TuyaVersion, data: &[u8]) -> Vec<u8> {
     if data.len() > 3 && &data[..3] == version.as_bytes() {
         match version {
             TuyaVersion::ThreeOne => data.split_at(19).1.to_vec(),
-            TuyaVersion::ThreeThree => data.split_at(15).1.to_vec(),
+            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => data.split_at(15).1.to_vec(),
         }
     } else {
         data.to_vec()
@@ -33,7 +36,7 @@ impl TuyaCipher {
         let res = encrypt(self.cipher, &self.key, None, data)?;
         match self.version {
             TuyaVersion::ThreeOne => Ok(base64::encode(res).as_bytes().to_vec()),
-            TuyaVersion::ThreeThree => Ok(res),
+            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => Ok(res),
         }
     }
 
@@ -43,7 +46,7 @@ impl TuyaCipher {
         // 3.1 is base64 encoded, 3.3 is not
         let data = match self.version {
             TuyaVersion::ThreeOne => base64::decode(&data)?,
-            TuyaVersion::ThreeThree => data.to_vec(),
+            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => data.to_vec(),
         };
         let res = decrypt(self.cipher, &self.key, None, &data)?;
 
@@ -65,6 +68,13 @@ impl TuyaCipher {
         .collect();
         let digest: [u8; 16] = md5::compute(hash_line).into();
         digest[4..16].to_vec()
+    }
+
+    pub fn hmac(&self, payload: &[u8]) -> Result<Vec<u8>> {
+        let pkey = PKey::hmac(&self.key).unwrap();
+        let mut signer = Signer::new(MessageDigest::sha256(), &pkey)?;
+        signer.update(payload)?;
+        Ok(signer.sign_to_vec()?)
     }
 }
 

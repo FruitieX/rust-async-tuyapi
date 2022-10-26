@@ -31,6 +31,6 @@ pub enum ErrorKind {
     ParsingIncomplete,
     #[error("Bad read from TcpStream")]
     BadTcpRead,
-    #[error("The given version {0}.{1} is not valid")]
-    VersionError(String, String),
+    #[error("The given version {0} is not valid")]
+    VersionError(String),
 }
