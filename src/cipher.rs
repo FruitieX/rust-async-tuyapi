@@ -32,6 +32,10 @@ impl TuyaCipher {
         }
     }
 
+    pub fn set_key(&mut self, key: Vec<u8>) {
+        self.key = key
+    }
+
     pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
         let res = encrypt(self.cipher, &self.key, None, data)?;
         match self.version {

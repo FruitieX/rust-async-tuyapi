@@ -23,6 +23,8 @@ pub enum ErrorKind {
     CommandTypeMissing,
     #[error("Error: CRC mismatch")]
     CRCError,
+    #[error("Missing Tuya key")]
+    MissingKey,
     #[error("The key length is {0}, should be 16")]
     KeyLength(usize),
     #[error("the tuyadevice is not created with a socket address. can not set object")]
@@ -33,4 +35,10 @@ pub enum ErrorKind {
     BadTcpRead,
     #[error("The given version {0} is not valid")]
     VersionError(String),
+    #[error("SessKeyNegResp message did not contain remote key")]
+    MissingRemoteKey,
+    #[error("SessKeyNegResp message does not contain a valid remote key")]
+    InvalidRemoteKey,
+    #[error("Not connected to device")]
+    NotConnected
 }
