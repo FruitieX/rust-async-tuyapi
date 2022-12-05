@@ -51,25 +51,15 @@ impl TuyaConnection {
             mes.seq_nr = Some(self.seq_id.next_id());
         }
         self.tcp_stream
-            .write_all(
-                self.mp
-                    // .encode(mes, session_key.map(|k| k.as_bytes()))?
-                    .encode(&mes, true)?
-                    .as_ref(),
-            )
+            .write_all(self.mp.encode(&mes, true)?.as_ref())
             .await?;
         // info!("Wrote {} bytes", bts);
 
-        let data = self.read().await;
-
-        debug!("Shutting down connection");
-        self.tcp_stream.shutdown().await?;
-
-        data
+        self.read().await
     }
 
     async fn read(&mut self) -> Result<Vec<Message>> {
-        let mut buf = [0; 256];
+        let mut buf = [0; 1024];
         let mut bts = 0;
         let mut attempts = 0;
 
