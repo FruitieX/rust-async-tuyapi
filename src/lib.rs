@@ -52,7 +52,6 @@ extern crate lazy_static;
 
 use serde::{Deserialize, Serialize};
 
-use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::Display;
 
@@ -92,7 +91,7 @@ impl Payload {
         uid: Option<String>,
         t: Option<u32>,
         dp_id: Option<DpId>,
-        dps: Option<HashMap<String, serde_json::Value>>,
+        dps: Option<serde_json::Value>,
     ) -> Payload {
         Payload::Struct(PayloadStruct {
             dev_id,
@@ -131,7 +130,7 @@ pub struct PayloadStruct {
     #[serde(rename = "dpId", skip_serializing_if = "Option::is_none")]
     pub dp_id: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dps: Option<HashMap<String, serde_json::Value>>,
+    pub dps: Option<serde_json::Value>,
 }
 
 /// Protocol v3.4 uses different payloads for ControlNew commands, for example
@@ -145,7 +144,7 @@ pub struct ControlNewPayload {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ControlNewPayloadData {
-    dps: HashMap<String, serde_json::Value>,
+    dps: serde_json::Value
 }
 /// This trait is implemented to allow truncated logging of secret data.
 pub trait Truncate {

@@ -10,7 +10,6 @@ use crate::mesparse::{CommandType, Message, MessageParser, TuyaVersion};
 use crate::{ControlNewPayload, ControlNewPayloadData, Payload, PayloadStruct, Result};
 use log::{debug, info};
 use openssl::symm::{Cipher, Crypter};
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -218,14 +217,7 @@ impl TuyaDevice {
         Ok(())
     }
 
-    pub async fn set_value(&mut self, index: u32, value: serde_json::Value) -> Result<()> {
-        let mut dps = HashMap::new();
-        dps.insert(index.to_string(), value);
-
-        self.set_values(dps).await
-    }
-
-    pub async fn set_values(&mut self, dps: HashMap<String, serde_json::Value>) -> Result<()> {
+    pub async fn set_values(&mut self, dps: serde_json::Value) -> Result<()> {
         let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
         let command = match self.version {
             TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => CommandType::Control,

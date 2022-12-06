@@ -5,6 +5,7 @@ use rust_async_tuyapi::{
 use serde_json::json;
 use std::collections::HashMap;
 
+/*
 fn create_test_payload() -> Payload {
     let mut dps = HashMap::new();
     dps.insert("1".to_string(), json!(true));
@@ -17,7 +18,6 @@ fn create_test_payload() -> Payload {
         Some(dps),
     )
 }
-/*
 #[test]
 fn encode_and_decode_message() {
     let payload = create_test_payload();
