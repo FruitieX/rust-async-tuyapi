@@ -8,8 +8,9 @@
 use crate::error::ErrorKind;
 use crate::mesparse::{CommandType, Message, MessageParser, TuyaVersion};
 use crate::{ControlNewPayload, ControlNewPayloadData, Payload, PayloadStruct, Result};
+use aes::cipher::generic_array::GenericArray;
+use aes::{Aes128, BlockEncrypt, NewBlockCipher};
 use log::{debug, info};
-use openssl::symm::{Cipher, Crypter};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -181,23 +182,17 @@ impl TuyaDevice {
             debug!("nonce_xor: {}", hex::encode(&nonce_xor));
 
             debug!("using local_key for crypter: {}", hex::encode(&local_key));
-            let mut session_key = vec![0u8; nonce_xor.len() + Cipher::aes_128_ecb().block_size()];
-            let mut c = Crypter::new(
-                Cipher::aes_128_ecb(),
-                openssl::symm::Mode::Encrypt,
-                local_key.as_bytes(),
-                None,
-            )
-            .unwrap();
 
-            c.pad(false);
-            let mut count = c.update(nonce_xor.as_slice(), &mut session_key)?;
-            count += c.finalize(&mut session_key[count..])?;
-            session_key.truncate(count);
+            let local_key = GenericArray::from_slice(local_key.as_bytes());
+            let cipher = Aes128::new(local_key);
 
-            debug!("session key: {}", hex::encode(&session_key));
+            let mut nonce_xor = nonce_xor;
+            let block = GenericArray::from_mut_slice(nonce_xor.as_mut_slice());
+            cipher.encrypt_block(block);
 
-            connection.mp.cipher.set_key(session_key);
+            debug!("session key: {}", hex::encode(&block));
+
+            connection.mp.cipher.set_key(block.to_vec())
         }
 
         Ok(())

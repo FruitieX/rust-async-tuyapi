@@ -110,7 +110,7 @@ impl Display for Payload {
             Payload::Struct(s) => write!(f, "{}", s),
             Payload::ControlNewStruct(s) => write!(f, "{}", s),
             Payload::String(s) => write!(f, "{}", s),
-            Payload::Raw(s) => write!(f, "{}", hex::encode(&s)),
+            Payload::Raw(s) => write!(f, "{}", hex::encode(s)),
         }
     }
 }

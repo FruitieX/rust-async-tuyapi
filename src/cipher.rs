@@ -1,14 +1,16 @@
 use aes::Aes128;
-use block_modes::{Ecb, BlockMode};
 use block_modes::block_padding::Pkcs7;
+use block_modes::{BlockMode, Ecb};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
-use crate::mesparse:: TuyaVersion;
+use crate::mesparse::TuyaVersion;
 use crate::Result;
 
 /// TuyaCipher is a low level api for encrypting and decrypting Vec<u8>'s.
 pub(crate) struct TuyaCipher {
     key: Vec<u8>,
-    version: TuyaVersion
+    version: TuyaVersion,
 }
 
 type Cipher = Ecb<Aes128, Pkcs7>;
@@ -28,7 +30,7 @@ impl TuyaCipher {
     pub fn create(key: &[u8], version: TuyaVersion) -> TuyaCipher {
         TuyaCipher {
             key: key.to_vec(),
-            version
+            version,
         }
     }
 
@@ -75,10 +77,11 @@ impl TuyaCipher {
     }
 
     pub fn hmac(&self, payload: &[u8]) -> Result<Vec<u8>> {
-        let pkey = PKey::hmac(&self.key).unwrap();
-        let mut signer = Signer::new(MessageDigest::sha256(), &pkey)?;
-        signer.update(payload)?;
-        Ok(signer.sign_to_vec()?)
+        type HmacSha256 = Hmac<Sha256>;
+        let mut mac = HmacSha256::new_from_slice(&self.key).unwrap();
+        mac.update(payload);
+        let result = mac.finalize();
+        Ok(result.into_bytes().to_vec())
     }
 }
 
@@ -141,7 +144,7 @@ mod tests {
     fn decrypt_message_with_version_threethree() {
         let cipher = TuyaCipher::create(b"bbe88b3f4106d354", TuyaVersion::ThreeThree);
         let message = b"zrA8OK3r3JMiUXpXDWauNppY4Am2c8rZ6sb4Yf15MjM8n5ByDx+QWeCZtcrPqddxLrhm906bSKbQAFtT1uCp+zP5AxlqJf5d0Pp2OxyXyjg=".to_vec();
-        let message = base64::decode(&message).unwrap();
+        let message = base64::decode(message).unwrap();
         let expected =
             r#"{"devId":"002004265ccf7fb1b659","dps":{"1":false,"2":0},"t":1529442366,"s":8}"#
                 .as_bytes()
