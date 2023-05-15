@@ -52,7 +52,6 @@ extern crate lazy_static;
 
 use serde::{Deserialize, Serialize};
 
-use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::Display;
 
@@ -62,13 +61,15 @@ use std::convert::TryInto;
 pub type Result<T> = std::result::Result<T, ErrorKind>;
 /// The Payload enum represents a payload sent to, and recevied from the Tuya devices. It might be
 /// a struct (ser/de from json) or a plain string.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
     Struct(PayloadStruct),
+    ControlNewStruct(ControlNewPayload),
     String(String),
+    Raw(Vec<u8>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DpId {
     Lower,
     Higher,
@@ -90,13 +91,13 @@ impl Payload {
         uid: Option<String>,
         t: Option<u32>,
         dp_id: Option<DpId>,
-        dps: Option<HashMap<String, serde_json::Value>>,
+        dps: Option<serde_json::Value>,
     ) -> Payload {
         Payload::Struct(PayloadStruct {
             dev_id,
             gw_id,
             uid,
-            t,
+            t: t.map(|t| t.to_string()),
             dp_id: dp_id.map(DpId::get_ids),
             dps,
         })
@@ -107,29 +108,44 @@ impl Display for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Payload::Struct(s) => write!(f, "{}", s),
+            Payload::ControlNewStruct(s) => write!(f, "{}", s),
             Payload::String(s) => write!(f, "{}", s),
+            Payload::Raw(s) => write!(f, "{}", hex::encode(&s)),
         }
     }
 }
 
 /// The PayloadStruct is Serialized to json and sent to the device. The dps field contains the
 /// actual commands to set and are device specific.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct PayloadStruct {
-    #[serde(rename = "devId")]
-    pub dev_id: String,
     #[serde(rename = "gwId", skip_serializing_if = "Option::is_none")]
     pub gw_id: Option<String>,
+    #[serde(rename = "devId")]
+    pub dev_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub t: Option<u32>,
+    pub t: Option<String>,
     #[serde(rename = "dpId", skip_serializing_if = "Option::is_none")]
     pub dp_id: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dps: Option<HashMap<String, serde_json::Value>>,
+    pub dps: Option<serde_json::Value>,
 }
 
+/// Protocol v3.4 uses different payloads for ControlNew commands, for example
+/// {"protocol":5,"t":1,"data":{"dps":{"20":false}}}
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ControlNewPayload {
+    pub protocol: u32,
+    pub t: u32,
+    pub data: ControlNewPayloadData,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ControlNewPayloadData {
+    dps: serde_json::Value
+}
 /// This trait is implemented to allow truncated logging of secret data.
 pub trait Truncate {
     fn truncate(&self) -> Self;
@@ -159,7 +175,9 @@ impl TryInto<Vec<u8>> for Payload {
     fn try_into(self) -> Result<Vec<u8>> {
         match self {
             Payload::Struct(s) => Ok(serde_json::to_vec(&s)?),
+            Payload::ControlNewStruct(s) => Ok(serde_json::to_vec(&s)?),
             Payload::String(s) => Ok(s.as_bytes().to_vec()),
+            Payload::Raw(s) => Ok(s),
         }
     }
 }
@@ -172,7 +190,7 @@ impl Truncate for PayloadStruct {
                 .gw_id
                 .as_ref()
                 .map(|gwid| String::from("...") + Self::truncate_str(gwid)),
-            t: self.t,
+            t: self.t.clone(),
             dp_id: self.dp_id.clone(),
             uid: self.uid.clone(),
             dps: self.dps.clone(),
@@ -188,5 +206,11 @@ impl Display for PayloadStruct {
         } else {
             write!(f, "{}", serde_json::to_string(&self.truncate()).unwrap())
         }
+    }
+}
+
+impl Display for ControlNewPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", serde_json::to_string(self).unwrap())
     }
 }
