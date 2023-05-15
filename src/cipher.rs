@@ -1,16 +1,17 @@
-use crate::mesparse::TuyaVersion;
+use aes::Aes128;
+use block_modes::{Ecb, BlockMode};
+use block_modes::block_padding::Pkcs7;
+
+use crate::mesparse:: TuyaVersion;
 use crate::Result;
-use openssl::hash::MessageDigest;
-use openssl::pkey::PKey;
-use openssl::sign::Signer;
-use openssl::symm::{decrypt, encrypt, Cipher};
 
 /// TuyaCipher is a low level api for encrypting and decrypting Vec<u8>'s.
 pub(crate) struct TuyaCipher {
     key: Vec<u8>,
-    version: TuyaVersion,
-    cipher: Cipher,
+    version: TuyaVersion
 }
+
+type Cipher = Ecb<Aes128, Pkcs7>;
 
 fn maybe_strip_header(version: &TuyaVersion, data: &[u8]) -> Vec<u8> {
     if data.len() > 3 && &data[..3] == version.as_bytes() {
@@ -27,8 +28,7 @@ impl TuyaCipher {
     pub fn create(key: &[u8], version: TuyaVersion) -> TuyaCipher {
         TuyaCipher {
             key: key.to_vec(),
-            version,
-            cipher: Cipher::aes_128_ecb(),
+            version
         }
     }
 
@@ -37,7 +37,7 @@ impl TuyaCipher {
     }
 
     pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let res = encrypt(self.cipher, &self.key, None, data)?;
+        let res = Cipher::new_from_slices(&self.key, &[])?.encrypt_vec(data);
         match self.version {
             TuyaVersion::ThreeOne => Ok(base64::encode(res).as_bytes().to_vec()),
             TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => Ok(res),
@@ -52,9 +52,9 @@ impl TuyaCipher {
             TuyaVersion::ThreeOne => base64::decode(&data)?,
             TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => data.to_vec(),
         };
-        let res = decrypt(self.cipher, &self.key, None, &data)?;
+        let res = Cipher::new_from_slices(&self.key, &[])?.decrypt_vec(&data)?;
 
-        Ok(res.to_vec())
+        Ok(res)
     }
 
     pub fn md5(&self, payload: &[u8]) -> Vec<u8> {
