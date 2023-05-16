@@ -19,23 +19,25 @@
 //! let current_time = SystemTime::now()
 //!     .duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as u32;
 //!
+//! let dps = serde_json::to_value(&dps).unwrap();
+//!
 //! // Create the payload to be sent, this will be serialized to the JSON format
 //! let payload = Payload::Struct(PayloadStruct{
 //!        dev_id: "123456789abcdef".to_string(),
 //!        gw_id: Some("123456789abcdef".to_string()),
 //!        uid: None,
-//!        t: Some(current_time),
+//!        t: Some(current_time.to_string()),
 //!        dp_id: None,
 //!        dps: Some(dps),
 //!        });
 //! // Create a TuyaDevice, this is the type used to set/get status to/from a Tuya compatible
 //! // device.
-//! let tuya_device = TuyaDevice::create("ver3.3", Some("fedcba987654321"),
+//! let mut tuya_device = TuyaDevice::new("3.3", "fedcba987654321", None,
 //!     IpAddr::from_str("192.168.0.123").unwrap())?;
 //!
 //! // Set the payload state on the Tuya device, an error here will contain
 //! // the error message received from the device.
-//! tuya_device.set(payload, 0).await?;
+//! tuya_device.set(payload).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -144,7 +146,7 @@ pub struct ControlNewPayload {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ControlNewPayloadData {
-    dps: serde_json::Value
+    dps: serde_json::Value,
 }
 /// This trait is implemented to allow truncated logging of secret data.
 pub trait Truncate {
