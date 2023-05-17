@@ -396,7 +396,6 @@ fn verify_key(key: Option<&str>) -> Result<Vec<u8>> {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,13 +416,16 @@ mod tests {
 
     #[test]
     fn test_parse_mqttversion() {
-        let version = TuyaVersion::from_str("3.1").unwrap();
-        assert_eq!(version, TuyaVersion::ThreeOne);
+        let version1 = TuyaVersion::from_str("3.1").unwrap();
+        assert_eq!(version1, TuyaVersion::ThreeOne);
 
-        let version2 = TuyaVersion::from_str("ver3.3").unwrap();
-        assert_eq!(version2, TuyaVersion::ThreeThree);
+        let version3 = TuyaVersion::from_str("3.3").unwrap();
+        assert_eq!(version3, TuyaVersion::ThreeThree);
 
-        assert!(TuyaVersion::from_str("3.4").is_err());
+        let version4 = TuyaVersion::from_str("3.4").unwrap();
+        assert_eq!(version4, TuyaVersion::ThreeFour);
+
+        assert!(TuyaVersion::from_str("3.5").is_err());
     }
 
     #[test]
@@ -436,7 +438,7 @@ mod tests {
             seq_nr: Some(0),
             ret_code: Some(0),
         };
-        let mp = MessageParser::create("3.1", None).unwrap();
+        let mp = MessageParser::create(TuyaVersion::ThreeOne, None).unwrap();
         let (buf, messages) = mp.parse_messages(&packet).unwrap();
         assert_eq!(messages[0], expected);
         assert_eq!(buf, &[] as &[u8]);
@@ -455,12 +457,12 @@ mod tests {
                 uid: None,
                 t: None,
                 dp_id: None,
-                dps: Some(dps),
+                dps: Some(serde_json::to_value(dps).unwrap()),
             }),
             seq_nr: Some(0),
             ret_code: Some(0),
         };
-        let mp = MessageParser::create("3.3", None).unwrap();
+        let mp = MessageParser::create(TuyaVersion::ThreeThree, None).unwrap();
         let (buf, messages) = mp.parse_messages(&packet).unwrap();
         assert_eq!(messages[0], expected);
         assert_eq!(buf, &[] as &[u8]);
@@ -476,7 +478,7 @@ mod tests {
             seq_nr: Some(0),
             ret_code: Some(1),
         };
-        let mp = MessageParser::create("3.3", None).unwrap();
+        let mp = MessageParser::create(TuyaVersion::ThreeThree, None).unwrap();
         let (buf, messages) = mp.parse_messages(&packet).unwrap();
         assert_eq!(messages[0], expected);
         assert_eq!(buf, &[] as &[u8]);
@@ -500,7 +502,7 @@ mod tests {
                 ret_code: Some(0),
             },
         ];
-        let mp = MessageParser::create("3.1", None).unwrap();
+        let mp = MessageParser::create(TuyaVersion::ThreeOne, None).unwrap();
         let (buf, messages) = mp.parse_messages(&packet).unwrap();
         assert_eq!(messages[0], expected[0]);
         assert_eq!(messages[1], expected[1]);
@@ -518,7 +520,7 @@ mod tests {
             uid: None,
             t: None,
             dp_id: None,
-            dps: Some(dps),
+            dps: Some(serde_json::to_value(dps).unwrap()),
         });
         let mes = Message {
             command: Some(CommandType::DpQuery),
@@ -526,9 +528,9 @@ mod tests {
             seq_nr: Some(0),
             ret_code: Some(0),
         };
-        let parser = MessageParser::create("3.1", None).unwrap();
-        let encrypted = parser.encode(&mes, Some(UDP_KEY.as_bytes())).unwrap();
-        let unencrypted = parser.encode(&mes, None).unwrap();
+        let parser = MessageParser::create(TuyaVersion::ThreeOne, None).unwrap();
+        let encrypted = parser.encode(&mes, true).unwrap();
+        let unencrypted = parser.encode(&mes, false).unwrap();
         // Only encrypt 3.1 if the flag is set
         assert_ne!(encrypted, unencrypted);
     }
@@ -543,7 +545,7 @@ mod tests {
             uid: None,
             t: None,
             dp_id: None,
-            dps: Some(dps),
+            dps: Some(serde_json::to_value(dps).unwrap()),
         });
         let mes = Message {
             command: Some(CommandType::DpQuery),
@@ -551,12 +553,11 @@ mod tests {
             seq_nr: Some(0),
             ret_code: Some(0),
         };
-        let parser = MessageParser::create("3.3", None).unwrap();
+        let parser = MessageParser::create(TuyaVersion::ThreeThree, None).unwrap();
 
-        let encrypted = parser.encode(&mes, Some(UDP_KEY.as_bytes())).unwrap();
-        let unencrypted = parser.encode(&mes, None).unwrap();
+        let encrypted = parser.encode(&mes, true).unwrap();
+        let unencrypted = parser.encode(&mes, false).unwrap();
         // Always encrypt 3.3, no matter what the flag is
         assert_eq!(encrypted, unencrypted);
     }
 }
-*/
