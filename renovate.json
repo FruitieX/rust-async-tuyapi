@@ -3,7 +3,8 @@
   "extends": [
     "config:base",
     "group:allNonMajor",
-    "github>Turbo87/renovate-config//rust/updateToolchain"
+    "github>Turbo87/renovate-config//rust/updateToolchain",
+    ":semanticCommits"
   ],
   "automergeType": "pr",
   "platformAutomerge": true,
