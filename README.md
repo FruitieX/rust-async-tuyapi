@@ -1,4 +1,4 @@
-# rust-tuyapi
+# rust-async-tuyapi
 Rust async implementation of the Tuya API used to communicate with Tuya/Smart Life devices.
 
 This crate supports musl targets.
