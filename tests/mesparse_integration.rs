@@ -47,7 +47,6 @@ fn encode_and_decode_get_message_version_three_three() {
     assert_eq!(message_to_encode, decoded[0]);
 }
 
-
 #[test]
 fn encode_and_decode_set_message_version_three_three() {
     let payload = create_test_payload();

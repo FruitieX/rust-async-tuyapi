@@ -1,7 +1,7 @@
-use std::io;
-use std::str::Utf8Error;
 use aes::cipher::InvalidLength;
 use inout::block_padding::UnpadError;
+use std::io;
+use std::str::Utf8Error;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -43,5 +43,5 @@ pub enum ErrorKind {
     #[error("SessKeyNegResp message does not contain a valid remote key")]
     InvalidRemoteKey,
     #[error("Not connected to device")]
-    NotConnected
+    NotConnected,
 }
