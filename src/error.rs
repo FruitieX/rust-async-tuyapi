@@ -1,6 +1,7 @@
 use std::io;
 use std::str::Utf8Error;
-use block_modes::{InvalidKeyIvLength, BlockModeError};
+use aes::cipher::InvalidLength;
+use inout::block_padding::UnpadError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -12,8 +13,8 @@ pub enum ErrorKind {
     TcpError(#[from] io::Error),
     Utf8Error(#[from] Utf8Error),
 
-    CryptoIv(#[from] InvalidKeyIvLength),
-    CryptoBlock(#[from] BlockModeError),
+    InvalidKeyLength(#[from] InvalidLength),
+    UnpadError(#[from] UnpadError),
 
     #[error("parsing failed with: {0:?}")]
     ParseError(nom::error::ErrorKind),

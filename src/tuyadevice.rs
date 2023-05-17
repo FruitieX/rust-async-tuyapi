@@ -9,7 +9,8 @@ use crate::error::ErrorKind;
 use crate::mesparse::{CommandType, Message, MessageParser, TuyaVersion};
 use crate::{ControlNewPayload, ControlNewPayloadData, Payload, PayloadStruct, Result};
 use aes::cipher::generic_array::GenericArray;
-use aes::{Aes128, BlockEncrypt, NewBlockCipher};
+use aes::cipher::{BlockEncrypt, KeyInit};
+use aes::Aes128;
 use log::{debug, info};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime};
@@ -104,18 +105,14 @@ impl TuyaDevice {
         tcp_stream.set_nodelay(true)?;
 
         let mp = MessageParser::create(self.version.clone(), self.key.clone())?;
-        let connection = TuyaConnection {
+        let mut connection = TuyaConnection {
             mp,
             seq_id: Default::default(),
             tcp_stream,
         };
 
-        self.connection = Some(connection);
-
         // Tuya protocol v3.4 requires session key negotiation
         if self.version == TuyaVersion::ThreeFour {
-            let connection = self.connection.as_mut().unwrap();
-
             let local_nonce = b"0123456789abcdef";
             let local_key = self.key.clone().ok_or(ErrorKind::MissingKey)?;
 
@@ -195,6 +192,8 @@ impl TuyaDevice {
             connection.mp.cipher.set_key(block.to_vec())
         }
 
+        self.connection = Some(connection);
+
         Ok(())
     }
 
@@ -220,8 +219,7 @@ impl TuyaDevice {
         };
 
         let current_time = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs() as u32;
         // let current_time = 1;
 

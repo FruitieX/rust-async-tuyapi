@@ -1,6 +1,5 @@
-use aes::Aes128;
-use block_modes::block_padding::Pkcs7;
-use block_modes::{BlockMode, Ecb};
+use aes::cipher::block_padding::Pkcs7;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -13,7 +12,9 @@ pub(crate) struct TuyaCipher {
     version: TuyaVersion,
 }
 
-type Cipher = Ecb<Aes128, Pkcs7>;
+type Aes128EcbEnc = ecb::Encryptor<aes::Aes128>;
+type Aes128EcbDec = ecb::Decryptor<aes::Aes128>;
+type HmacSha256 = Hmac<Sha256>;
 
 fn maybe_strip_header(version: &TuyaVersion, data: &[u8]) -> Vec<u8> {
     if data.len() > 3 && &data[..3] == version.as_bytes() {
@@ -39,24 +40,36 @@ impl TuyaCipher {
     }
 
     pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let res = Cipher::new_from_slices(&self.key, &[])?.encrypt_vec(data);
+        use aes::cipher::{BlockEncryptMut, KeyInit};
+
+        let ct = Aes128EcbEnc::new_from_slice(self.key.as_slice())?
+            .encrypt_padded_vec_mut::<Pkcs7>(data);
+
         match self.version {
-            TuyaVersion::ThreeOne => Ok(base64::encode(res).as_bytes().to_vec()),
-            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => Ok(res),
+            TuyaVersion::ThreeOne => Ok(base64::engine::general_purpose::STANDARD
+                .encode(ct)
+                .as_bytes()
+                .to_vec()),
+            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => Ok(ct.to_vec()),
         }
     }
 
     pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        use aes::cipher::{BlockDecryptMut, KeyInit};
+
         // Different header size in version 3.1 and 3.3
         let data = maybe_strip_header(&self.version, data);
+
         // 3.1 is base64 encoded, 3.3 is not
         let data = match self.version {
-            TuyaVersion::ThreeOne => base64::decode(&data)?,
+            TuyaVersion::ThreeOne => base64::engine::general_purpose::STANDARD.decode(&data)?,
             TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => data.to_vec(),
         };
-        let res = Cipher::new_from_slices(&self.key, &[])?.decrypt_vec(&data)?;
 
-        Ok(res)
+        let pt = Aes128EcbDec::new_from_slice(self.key.as_slice())?
+            .decrypt_padded_vec_mut::<Pkcs7>(&data)?;
+
+        Ok(pt.to_vec())
     }
 
     pub fn md5(&self, payload: &[u8]) -> Vec<u8> {
@@ -77,8 +90,7 @@ impl TuyaCipher {
     }
 
     pub fn hmac(&self, payload: &[u8]) -> Result<Vec<u8>> {
-        type HmacSha256 = Hmac<Sha256>;
-        let mut mac = HmacSha256::new_from_slice(&self.key).unwrap();
+        let mut mac = HmacSha256::new_from_slice(&self.key)?;
         mac.update(payload);
         let result = mac.finalize();
         Ok(result.into_bytes().to_vec())
@@ -144,7 +156,9 @@ mod tests {
     fn decrypt_message_with_version_threethree() {
         let cipher = TuyaCipher::create(b"bbe88b3f4106d354", TuyaVersion::ThreeThree);
         let message = b"zrA8OK3r3JMiUXpXDWauNppY4Am2c8rZ6sb4Yf15MjM8n5ByDx+QWeCZtcrPqddxLrhm906bSKbQAFtT1uCp+zP5AxlqJf5d0Pp2OxyXyjg=".to_vec();
-        let message = base64::decode(message).unwrap();
+        let message = base64::engine::general_purpose::STANDARD
+            .decode(message)
+            .unwrap();
         let expected =
             r#"{"devId":"002004265ccf7fb1b659","dps":{"1":false,"2":0},"t":1529442366,"s":8}"#
                 .as_bytes()
