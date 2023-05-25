@@ -15,7 +15,9 @@ use log::{debug, info};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::{channel, Receiver};
 use tokio::time::sleep;
 
 #[derive(Default)]
@@ -34,52 +36,54 @@ impl SeqId {
     }
 }
 
+type RecvChannel = Receiver<Result<Vec<Message>>>;
+
 pub struct TuyaConnection {
     seq_id: SeqId,
-    tcp_stream: TcpStream,
+    tcp_write_half: OwnedWriteHalf,
     mp: MessageParser,
 }
 
 impl TuyaConnection {
-    async fn send(&mut self, mes: &Message) -> Result<Vec<Message>> {
+    async fn send(&mut self, mes: &Message) -> Result<()> {
         info!(
             "Writing message to {} ({}):\n",
-            self.tcp_stream.peer_addr()?,
+            self.tcp_write_half.peer_addr()?,
             &mes
         );
         let mut mes = (*mes).clone();
         if matches!(mes.seq_nr, None) {
             mes.seq_nr = Some(self.seq_id.next_id());
         }
-        self.tcp_stream
+        self.tcp_write_half
             .write_all(self.mp.encode(&mes, true)?.as_ref())
             .await?;
         // info!("Wrote {} bytes", bts);
 
-        self.read().await
-    }
-
-    async fn read(&mut self) -> Result<Vec<Message>> {
-        let mut buf = [0; 1024];
-        let mut bts = 0;
-        let mut attempts = 0;
-
-        while bts == 0 && attempts < 3 {
-            bts = self.tcp_stream.read(&mut buf).await?;
-            info!("Received {} bytes", bts);
-            attempts += 1;
-            sleep(Duration::from_millis(100)).await;
-        }
-
-        if bts == 0 {
-            return Err(ErrorKind::BadTcpRead);
-        } else {
-            debug!("Received response:\n{}", hex::encode(&buf[..bts]));
-        }
-        self.mp.parse(&buf[..bts])
+        // self.read().await
+        Ok(())
     }
 }
 
+async fn tcp_read(tcp_read_half: &mut OwnedReadHalf, mp: &MessageParser) -> Result<Vec<Message>> {
+    let mut buf = [0; 1024];
+    let mut bts = 0;
+    let mut attempts = 0;
+
+    while bts == 0 && attempts < 3 {
+        bts = tcp_read_half.read(&mut buf).await?;
+        info!("Received {} bytes", bts);
+        attempts += 1;
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    if bts == 0 {
+        return Err(ErrorKind::TcpStreamClosed);
+    } else {
+        debug!("Received response:\n{}", hex::encode(&buf[..bts]));
+    }
+    mp.parse(&buf[..bts])
+}
 pub struct TuyaDevice {
     addr: SocketAddr,
     device_id: String,
@@ -100,15 +104,18 @@ impl TuyaDevice {
         })
     }
 
-    pub async fn connect(&mut self) -> Result<()> {
+    pub async fn connect(&mut self) -> Result<RecvChannel> {
         let tcp_stream = TcpStream::connect(&self.addr).await?;
         tcp_stream.set_nodelay(true)?;
+
+        let (mut tcp_read_half, tcp_write_half) = tcp_stream.into_split();
+        let (tx, rx) = channel(10);
 
         let mp = MessageParser::create(self.version.clone(), self.key.clone())?;
         let mut connection = TuyaConnection {
             mp,
             seq_id: Default::default(),
-            tcp_stream,
+            tcp_write_half,
         };
 
         // Tuya protocol v3.4 requires session key negotiation
@@ -130,11 +137,11 @@ impl TuyaDevice {
                 &start_negotiation_msg
             );
             connection
-                .tcp_stream
+                .tcp_write_half
                 .write_all(connection.mp.encode(&start_negotiation_msg, true)?.as_ref())
                 .await?;
 
-            let rkey = connection.read().await?;
+            let rkey = tcp_read(&mut tcp_read_half, &connection.mp).await?;
             let rkey = rkey.into_iter().next().ok_or(ErrorKind::MissingRemoteKey)?;
             let rkey = match rkey.payload {
                 Payload::Raw(s) if s.len() == 48 => Ok(s),
@@ -161,7 +168,7 @@ impl TuyaDevice {
                 &session_negotiation_finish_msg
             );
             connection
-                .tcp_stream
+                .tcp_write_half
                 .write_all(
                     connection
                         .mp
@@ -192,9 +199,40 @@ impl TuyaDevice {
             connection.mp.cipher.set_key(block.to_vec())
         }
 
+        let mp = connection.mp.clone();
         self.connection = Some(connection);
 
-        Ok(())
+        tokio::spawn(async move {
+            loop {
+                let mut buf = [0; 1024];
+                let result = tcp_read_half.read(&mut buf).await;
+
+                let result = match result {
+                    Ok(0) => Err(ErrorKind::TcpStreamClosed),
+                    Ok(bytes) => {
+                        info!("Received {} bytes", bytes);
+                        mp.parse(&buf[..bytes])
+                    }
+                    Err(e) => Err(ErrorKind::TcpError(e)),
+                };
+
+                let send_result = match result {
+                    Ok(messages) => tx.send(Ok(messages)).await,
+                    Err(e) => {
+                        info!("TCP Error: {:?}", e);
+                        tx.send(Err(e)).await.ok();
+                        break;
+                    }
+                };
+
+                if let Err(e) = send_result {
+                    info!("Receiver was dropped, disconnecting: {:?}", e);
+                    break;
+                }
+            }
+        });
+
+        Ok(rx)
     }
 
     pub async fn set(&mut self, tuya_payload: Payload) -> Result<()> {
@@ -204,10 +242,8 @@ impl TuyaDevice {
             TuyaVersion::ThreeFour => CommandType::ControlNew,
         };
         let mes = Message::new(tuya_payload, command);
-        let replies = connection.send(&mes).await?;
-        replies
-            .iter()
-            .for_each(|mes| info!("Decoded response:\n{}", mes));
+        connection.send(&mes).await?;
+
         Ok(())
     }
 
@@ -241,34 +277,35 @@ impl TuyaDevice {
             }),
         };
         let mes = Message::new(payload, command);
-        let replies = connection.send(&mes).await?;
-        replies
-            .iter()
-            .for_each(|mes| info!("Decoded response:\n{}", mes));
+        connection.send(&mes).await?;
+
         Ok(())
     }
 
-    pub async fn get(&mut self, tuya_payload: Payload) -> Result<Vec<Message>> {
+    pub async fn get(&mut self, tuya_payload: Payload) -> Result<()> {
         let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
         let command = match self.version {
             TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => CommandType::DpQuery,
             TuyaVersion::ThreeFour => CommandType::DpQueryNew,
         };
         let mes = Message::new(tuya_payload, command);
-        let replies = connection.send(&mes).await?;
-        replies
-            .iter()
-            .for_each(|mes| info!("Decoded response:\n{}", mes));
-        Ok(replies)
+        connection.send(&mes).await?;
+
+        Ok(())
     }
 
-    pub async fn refresh(&mut self, tuya_payload: Payload) -> Result<Vec<Message>> {
+    pub async fn refresh(&mut self, tuya_payload: Payload) -> Result<()> {
         let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
         let mes = Message::new(tuya_payload, CommandType::DpRefresh);
-        let replies = connection.send(&mes).await?;
-        replies
-            .iter()
-            .for_each(|mes| info!("Decoded response:\n{}", mes));
-        Ok(replies)
+        connection.send(&mes).await?;
+
+        Ok(())
+    }
+
+    pub async fn send_msg(&mut self, msg: Message) -> Result<()> {
+        let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
+        connection.send(&msg).await?;
+
+        Ok(())
     }
 }

@@ -160,6 +160,7 @@ impl Message {
 /// The message parser takes care of encoding and parsing messages before send and after
 /// receive. It uses a TuyaCipher to encrypt and decrypt messages sent with the Tuya
 /// protocol version 3.3.
+#[derive(Clone)]
 pub struct MessageParser {
     version: TuyaVersion,
     pub(crate) cipher: TuyaCipher,

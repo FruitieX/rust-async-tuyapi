@@ -35,7 +35,7 @@ pub enum ErrorKind {
     #[error("Data was incomplete. Error while parsing the received data")]
     ParsingIncomplete,
     #[error("Bad read from TcpStream")]
-    BadTcpRead,
+    TcpStreamClosed,
     #[error("The given version {0} is not valid")]
     VersionError(String),
     #[error("SessKeyNegResp message did not contain remote key")]

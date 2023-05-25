@@ -7,6 +7,7 @@ use crate::mesparse::TuyaVersion;
 use crate::Result;
 
 /// TuyaCipher is a low level api for encrypting and decrypting Vec<u8>'s.
+#[derive(Clone)]
 pub(crate) struct TuyaCipher {
     key: Vec<u8>,
     version: TuyaVersion,
