@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.1.0](https://github.com/FruitieX/rust-async-tuyapi/compare/v1.0.0...v1.1.0) (2025-11-27)
+
+
+### Features
+
+* add session key validation and heartbeat functionality for v3.4 devices ([95557b6](https://github.com/FruitieX/rust-async-tuyapi/commit/95557b669f62ca0b222442dee793732578ce26dd))
+
+
+### Bug Fixes
+
+* **deps:** update rust crate aes to 0.8.3 ([0ef41df](https://github.com/FruitieX/rust-async-tuyapi/commit/0ef41df29982310fc7a6b0334717c7d3fc992941))
+* **deps:** update rust crate ecb to 0.1.2 ([9479a38](https://github.com/FruitieX/rust-async-tuyapi/commit/9479a38c8ca872d79bae1033cf059f71d53bc022))
+* **deps:** update rust crate num-derive to 0.4 ([462eb16](https://github.com/FruitieX/rust-async-tuyapi/commit/462eb1697d132692ebc5e5dddd10c483a3b8c9fe))
+* **deps:** update rust crate sha2 to 0.10.7 ([5bced2d](https://github.com/FruitieX/rust-async-tuyapi/commit/5bced2d4c6adf62a995c5f6b3c4e42634a81fa77))
+
 ## [1.0.0](https://github.com/FruitieX/rust-async-tuyapi/compare/v0.8.0...v1.0.0) (2023-05-25)
 
 
