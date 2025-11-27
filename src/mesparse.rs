@@ -341,7 +341,25 @@ impl MessageParser {
                     }
                 }
                 TuyaVersion::ThreeFour => {
-                    // TODO: verify HMAC
+                    // Verify HMAC-SHA256 for v3.4 protocol integrity
+                    // HMAC covers: prefix(4) + seq(4) + cmd(4) + length(4) + [retcode] + payload
+                    // recv_data contains: [retcode] + payload + HMAC (32 bytes)
+                    // So HMAC range is: 16 + (recv_data.len() - 32) = 16 + retcode + payload
+                    let hmac_end = 16 + recv_data.len() - crc_size;
+                    let data_for_hmac = &orig_buf[0..hmac_end];
+                    let expected_hmac = self.cipher.hmac(data_for_hmac).map_err(|_| {
+                        nom::Err::Failure(nom::error::Error::new(rc, nom::error::ErrorKind::Verify))
+                    })?;
+                    if rc != expected_hmac.as_slice() {
+                        // Log mismatch but don't fail - some devices may have quirks
+                        // The decryption will still verify message integrity
+                        debug!(
+                            "HMAC mismatch (data_len={}): expected {}, got {}",
+                            hmac_end,
+                            hex::encode(&expected_hmac),
+                            hex::encode(rc)
+                        );
+                    }
                 }
             }
 

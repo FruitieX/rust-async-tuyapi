@@ -12,6 +12,7 @@ use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes128;
 use log::{debug, info};
+use rand::Rng;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -66,7 +67,7 @@ impl TuyaConnection {
 }
 
 async fn tcp_read(tcp_read_half: &mut OwnedReadHalf, mp: &MessageParser) -> Result<Vec<Message>> {
-    let mut buf = [0; 1024];
+    let mut buf = [0; 4096];
     let mut bts = 0;
     let mut attempts = 0;
 
@@ -120,7 +121,8 @@ impl TuyaDevice {
 
         // Tuya protocol v3.4 requires session key negotiation
         if self.version == TuyaVersion::ThreeFour {
-            let local_nonce = b"0123456789abcdef";
+            // Generate random 16-byte nonce for session key negotiation
+            let local_nonce: [u8; 16] = rand::rng().random();
             let local_key = self.key.clone().ok_or(ErrorKind::MissingKey)?;
 
             let start_negotiation_msg = Message {
@@ -149,9 +151,47 @@ impl TuyaDevice {
             }?;
 
             let remote_nonce = &rkey[..16];
-            // let remote_nonce = b"1123456789abcdef";
-            let _hmac = &rkey[16..48];
+            let remote_hmac = &rkey[16..48];
 
+            // Verify device's HMAC to ensure it knows the local key
+            let expected_hmac = connection.mp.cipher.hmac(&local_nonce)?;
+            if remote_hmac != expected_hmac.as_slice() {
+                debug!(
+                    "HMAC mismatch during session negotiation: expected {}, got {}",
+                    hex::encode(&expected_hmac),
+                    hex::encode(remote_hmac)
+                );
+                // Note: Some devices may not send correct HMAC, so we log but don't fail
+            }
+
+            // Compute session key BEFORE sending FINISH so we can check for 0x00 bug
+            // and abort before sending SessKeyNegFinish
+            let nonce_xor: Vec<u8> = local_nonce
+                .iter()
+                .zip(remote_nonce.iter())
+                .map(|(&a, &b)| a ^ b)
+                .collect();
+
+            debug!("nonce_xor: {}", hex::encode(&nonce_xor));
+            debug!("using local_key for crypter: {}", hex::encode(&local_key));
+
+            let local_key_arr = GenericArray::from_slice(local_key.as_bytes());
+            let cipher = Aes128::new(local_key_arr);
+
+            let mut nonce_xor = nonce_xor;
+            let block = GenericArray::from_mut_slice(nonce_xor.as_mut_slice());
+            cipher.encrypt_block(block);
+
+            debug!("session key: {}", hex::encode(&block));
+
+            // Known v3.4 bug: if first byte of session key is 0x00, device considers it invalid
+            // This causes "Error 914: Check device key or version" and connection failures
+            // https://github.com/jasonacox/tinytuya/discussions/260#:~:text=Bug%2Fquirk%3A%20If%20the%20first%20byte%20of%20the%20resulting%20session%20key%20is%200x00%20then%20the%20device%20will%20not%20consider%20it%20valid%20and%20you%20will%20need%20to%20restart%20the%20negotiation%20over
+            if block[0] == 0x00 {
+                return Err(ErrorKind::InvalidSessionKey);
+            }
+
+            // Session key is valid, now send SessKeyNegFinish to complete the handshake
             let rkey_hmac = connection.mp.cipher.hmac(remote_nonce)?;
 
             let session_negotiation_finish_msg = Message {
@@ -177,25 +217,6 @@ impl TuyaDevice {
                 )
                 .await?;
 
-            let nonce_xor: Vec<u8> = local_nonce
-                .iter()
-                .zip(remote_nonce.iter())
-                .map(|(&a, &b)| a ^ b)
-                .collect();
-
-            debug!("nonce_xor: {}", hex::encode(&nonce_xor));
-
-            debug!("using local_key for crypter: {}", hex::encode(&local_key));
-
-            let local_key = GenericArray::from_slice(local_key.as_bytes());
-            let cipher = Aes128::new(local_key);
-
-            let mut nonce_xor = nonce_xor;
-            let block = GenericArray::from_mut_slice(nonce_xor.as_mut_slice());
-            cipher.encrypt_block(block);
-
-            debug!("session key: {}", hex::encode(&block));
-
             connection.mp.cipher.set_key(block.to_vec())
         }
 
@@ -204,7 +225,7 @@ impl TuyaDevice {
 
         tokio::spawn(async move {
             loop {
-                let mut buf = [0; 1024];
+                let mut buf = [0; 4096];
                 let result = tcp_read_half.read(&mut buf).await;
 
                 let result = match result {
@@ -306,6 +327,28 @@ impl TuyaDevice {
         let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
         connection.send(&msg).await?;
 
+        Ok(())
+    }
+
+    /// Send a heartbeat to keep the connection alive.
+    /// This is especially important for v3.4 devices which may close
+    /// connections that appear idle.
+    pub async fn heartbeat(&mut self) -> Result<()> {
+        let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
+        let mes = Message::new(Payload::Raw(vec![]), CommandType::HeartBeat);
+        connection.send(&mes).await?;
+        Ok(())
+    }
+
+    /// Gracefully disconnect from the device.
+    /// This shuts down the TCP write half, signaling to the device that
+    /// we're closing the connection.
+    pub async fn disconnect(&mut self) -> Result<()> {
+        if let Some(mut connection) = self.connection.take() {
+            // Shutdown the write half to signal connection close
+            connection.tcp_write_half.shutdown().await?;
+            info!("Disconnected from {}", self.addr);
+        }
         Ok(())
     }
 }

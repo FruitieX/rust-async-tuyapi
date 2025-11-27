@@ -44,4 +44,6 @@ pub enum ErrorKind {
     InvalidRemoteKey,
     #[error("Not connected to device")]
     NotConnected,
+    #[error("Session key has invalid first byte (0x00), device will reject it - retry connection")]
+    InvalidSessionKey,
 }
