@@ -310,7 +310,12 @@ impl MessageParser {
             tag(*SUFFIX_BYTES),
         )))(orig_buf)?;
         let mut messages = vec![];
-        for (_, seq_nr, command, recv_data_orig, _) in vec {
+        let mut msg_offset = 0_usize; // Track position of each message in orig_buf
+        for (prefix, seq_nr, command, recv_data_orig, suffix) in vec {
+            // Calculate the total size of this message for offset tracking
+            // prefix(4) + seq(4) + cmd(4) + length(4) + data + suffix(4)
+            let msg_size = prefix.len() + 4 + 4 + 4 + recv_data_orig.len() + suffix.len();
+            
             // check if the recv_data contains a return code
             let (recv_data, maybe_retcode) = peek(be_u32)(recv_data_orig)?;
             let (recv_data, ret_code, _ret_len) = if maybe_retcode & 0xFFFF_FF00 == 0 {
@@ -326,12 +331,14 @@ impl MessageParser {
             match self.version {
                 TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => {
                     let recv_crc = u32::from_be_bytes([rc[0], rc[1], rc[2], rc[3]]);
-                    // For v3.1/v3.3, use the shortened recv_data for CRC calculation
-                    if crc(&orig_buf[0..recv_data_orig.len() + 12]) != recv_crc {
+                    // For v3.1/v3.3, CRC is calculated from this message's start
+                    let crc_start = msg_offset;
+                    let crc_end = msg_offset + recv_data_orig.len() + 12;
+                    if crc(&orig_buf[crc_start..crc_end]) != recv_crc {
                         error!(
                             "Found CRC: {:#x}, Expected CRC: {:#x}",
                             recv_crc,
-                            crc(&orig_buf[0..recv_data_orig.len() + 12])
+                            crc(&orig_buf[crc_start..crc_end])
                         );
                         // I hijack the ErrorKind::ManyMN here to propagate a CRC error
                         // TODO: should probably create and use a special CRC error here
@@ -345,8 +352,10 @@ impl MessageParser {
                     // Verify HMAC-SHA256 for v3.4 protocol integrity
                     // HMAC covers: prefix(4) + seq(4) + cmd(4) + length(4) + payload (includes retcode)
                     // Use recv_data_orig which has the full data before retcode extraction
-                    let hmac_end = 16 + recv_data_orig.len() - crc_size;
-                    let data_for_hmac = &orig_buf[0..hmac_end];
+                    // Calculate from THIS message's start position, not buffer start
+                    let hmac_start = msg_offset;
+                    let hmac_end = msg_offset + 16 + recv_data_orig.len() - crc_size;
+                    let data_for_hmac = &orig_buf[hmac_start..hmac_end];
                     let expected_hmac = self.cipher.hmac(data_for_hmac).map_err(|_| {
                         nom::Err::Failure(nom::error::Error::new(rc, nom::error::ErrorKind::Verify))
                     })?;
@@ -373,6 +382,9 @@ impl MessageParser {
                 ret_code,
             };
             messages.push(message);
+            
+            // Move offset to next message
+            msg_offset += msg_size;
         }
         Ok((buf, messages))
     }

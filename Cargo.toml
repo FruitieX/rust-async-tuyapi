@@ -1,6 +1,6 @@
 [package]
 name = "rust-async-tuyapi"
-version = "1.1.1"
+version = "1.1.2"
 authors = ["Rasmus Lövegren <rasmus@lovegren.fi>", "Emil Sodergren <EmilSodergren@users.noreply.github.com>"]
 edition = "2018"
 description = "This package is a rust port of the exellent NodeJS implementation by codetheweb for the Tuya API, adapted for async usage"
