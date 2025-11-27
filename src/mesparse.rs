@@ -310,10 +310,10 @@ impl MessageParser {
             tag(*SUFFIX_BYTES),
         )))(orig_buf)?;
         let mut messages = vec![];
-        for (_, seq_nr, command, recv_data, _) in vec {
+        for (_, seq_nr, command, recv_data_orig, _) in vec {
             // check if the recv_data contains a return code
-            let (recv_data, maybe_retcode) = peek(be_u32)(recv_data)?;
-            let (recv_data, ret_code, ret_len) = if maybe_retcode & 0xFFFF_FF00 == 0 {
+            let (recv_data, maybe_retcode) = peek(be_u32)(recv_data_orig)?;
+            let (recv_data, ret_code, _ret_len) = if maybe_retcode & 0xFFFF_FF00 == 0 {
                 // Has a return code
                 let (recv_data, ret_code) = recognize(be_u32)(recv_data)?;
                 (recv_data, Some(ret_code[3]), 4_usize)
@@ -326,11 +326,12 @@ impl MessageParser {
             match self.version {
                 TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => {
                     let recv_crc = u32::from_be_bytes([rc[0], rc[1], rc[2], rc[3]]);
-                    if crc(&orig_buf[0..recv_data.len() + 12 + ret_len]) != recv_crc {
+                    // For v3.1/v3.3, use the shortened recv_data for CRC calculation
+                    if crc(&orig_buf[0..recv_data_orig.len() + 12]) != recv_crc {
                         error!(
                             "Found CRC: {:#x}, Expected CRC: {:#x}",
                             recv_crc,
-                            crc(&orig_buf[0..recv_data.len() + 12 + ret_len])
+                            crc(&orig_buf[0..recv_data_orig.len() + 12])
                         );
                         // I hijack the ErrorKind::ManyMN here to propagate a CRC error
                         // TODO: should probably create and use a special CRC error here
@@ -342,23 +343,23 @@ impl MessageParser {
                 }
                 TuyaVersion::ThreeFour => {
                     // Verify HMAC-SHA256 for v3.4 protocol integrity
-                    // HMAC covers: prefix(4) + seq(4) + cmd(4) + length(4) + [retcode] + payload
-                    // recv_data contains: [retcode] + payload + HMAC (32 bytes)
-                    // So HMAC range is: 16 + (recv_data.len() - 32) = 16 + retcode + payload
-                    let hmac_end = 16 + recv_data.len() - crc_size;
+                    // HMAC covers: prefix(4) + seq(4) + cmd(4) + length(4) + payload (includes retcode)
+                    // Use recv_data_orig which has the full data before retcode extraction
+                    let hmac_end = 16 + recv_data_orig.len() - crc_size;
                     let data_for_hmac = &orig_buf[0..hmac_end];
                     let expected_hmac = self.cipher.hmac(data_for_hmac).map_err(|_| {
                         nom::Err::Failure(nom::error::Error::new(rc, nom::error::ErrorKind::Verify))
                     })?;
                     if rc != expected_hmac.as_slice() {
-                        // Log mismatch but don't fail - some devices may have quirks
-                        // The decryption will still verify message integrity
-                        debug!(
-                            "HMAC mismatch (data_len={}): expected {}, got {}",
-                            hmac_end,
+                        error!(
+                            "HMAC verification failed - expected {}, got {}",
                             hex::encode(&expected_hmac),
                             hex::encode(rc)
                         );
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            rc,
+                            nom::error::ErrorKind::Verify,
+                        )));
                     }
                 }
             }
