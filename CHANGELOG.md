@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/FruitieX/rust-async-tuyapi/compare/v1.1.0...v1.2.0) (2025-11-28)
+
+
+### Bug Fixes
+
+* fix v3.4 HMAC calculation ([5e63daf](https://github.com/FruitieX/rust-async-tuyapi/commit/5e63dafb488f4f2ed413da68089cfdfc8034111c))
+* **parser:** improve message offset tracking in HMAC calculations ([411a331](https://github.com/FruitieX/rust-async-tuyapi/commit/411a33188a28b4d1ab1ce185bd527bbc18f7103b))
+
+
+### Miscellaneous Chores
+
+* release v1.2.0 ([4d1e600](https://github.com/FruitieX/rust-async-tuyapi/commit/4d1e600e771ea67c9705c7379d48a55a0fbdf340))
+
 ## [1.1.0](https://github.com/FruitieX/rust-async-tuyapi/compare/v1.0.0...v1.1.0) (2025-11-27)
 
 
