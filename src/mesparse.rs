@@ -315,7 +315,7 @@ impl MessageParser {
             // Calculate the total size of this message for offset tracking
             // prefix(4) + seq(4) + cmd(4) + length(4) + data + suffix(4)
             let msg_size = prefix.len() + 4 + 4 + 4 + recv_data_orig.len() + suffix.len();
-            
+
             // check if the recv_data contains a return code
             let (recv_data, maybe_retcode) = peek(be_u32)(recv_data_orig)?;
             let (recv_data, ret_code, _ret_len) = if maybe_retcode & 0xFFFF_FF00 == 0 {
@@ -382,7 +382,7 @@ impl MessageParser {
                 ret_code,
             };
             messages.push(message);
-            
+
             // Move offset to next message
             msg_offset += msg_size;
         }
@@ -519,8 +519,8 @@ mod tests {
     #[test]
     fn test_parse_double_messages() {
         let packet =
-            hex::decode("000055aa00000000000000090000000c00000000b051ab030000aa55000055aa000000000000000a0000000c00000000b051ab030000aa55").unwrap();
-        let expected = vec![
+            hex::decode("000055aa00000000000000090000000c00000000b051ab030000aa55000055aa000000000000000a0000000c0000000089dc97c60000aa55").unwrap();
+        let expected = [
             Message {
                 command: Some(CommandType::HeartBeat),
                 payload: Payload::String("".to_string()),

@@ -53,7 +53,7 @@ impl TuyaConnection {
             &mes
         );
         let mut mes = (*mes).clone();
-        if matches!(mes.seq_nr, None) {
+        if mes.seq_nr.is_none() {
             mes.seq_nr = Some(self.seq_id.next_id());
         }
         self.tcp_write_half
