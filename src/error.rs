@@ -1,5 +1,5 @@
 use aes::cipher::InvalidLength;
-use inout::block_padding::UnpadError;
+use cipher::block_padding::UnpadError;
 use std::io;
 use std::str::Utf8Error;
 use thiserror::Error;
@@ -14,7 +14,8 @@ pub enum ErrorKind {
     Utf8Error(#[from] Utf8Error),
 
     InvalidKeyLength(#[from] InvalidLength),
-    UnpadError(#[from] UnpadError),
+    #[error("AES padding error")]
+    UnpadError,
 
     #[error("parsing failed with: {0:?}")]
     ParseError(nom::error::ErrorKind),
@@ -46,4 +47,12 @@ pub enum ErrorKind {
     NotConnected,
     #[error("Session key has invalid first byte (0x00), device will reject it - retry connection")]
     InvalidSessionKey,
+    #[error("Cipher error: {0}")]
+    CipherError(&'static str),
+}
+
+impl From<UnpadError> for ErrorKind {
+    fn from(_: UnpadError) -> Self {
+        ErrorKind::UnpadError
+    }
 }

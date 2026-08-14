@@ -13,8 +13,7 @@ use nom::{
     combinator::{map, peek, recognize},
     multi::{length_data, many1},
     number::complete::be_u32,
-    sequence::tuple,
-    IResult,
+    IResult, Parser,
 };
 
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -30,6 +29,8 @@ pub(crate) const UDP_KEY: &str = "yGAdlopoPVldABfn";
 lazy_static! {
     static ref PREFIX_BYTES: [u8; 4] = <[u8; 4]>::from_hex("000055AA").unwrap();
     static ref SUFFIX_BYTES: [u8; 4] = <[u8; 4]>::from_hex("0000AA55").unwrap();
+    static ref PREFIX_BYTES_35: [u8; 4] = <[u8; 4]>::from_hex("00006699").unwrap();
+    static ref SUFFIX_BYTES_35: [u8; 4] = <[u8; 4]>::from_hex("00009966").unwrap();
 }
 
 /// Human readable definitions of command bytes.
@@ -96,6 +97,7 @@ pub enum TuyaVersion {
     ThreeOne,
     ThreeThree,
     ThreeFour,
+    ThreeFive,
 }
 
 impl TuyaVersion {
@@ -104,6 +106,7 @@ impl TuyaVersion {
             TuyaVersion::ThreeOne => b"3.1",
             TuyaVersion::ThreeThree => b"3.3",
             TuyaVersion::ThreeFour => b"3.4",
+            TuyaVersion::ThreeFive => b"3.5",
         }
     }
 }
@@ -116,6 +119,7 @@ impl FromStr for TuyaVersion {
             "3.1" => Ok(TuyaVersion::ThreeOne),
             "3.3" => Ok(TuyaVersion::ThreeThree),
             "3.4" => Ok(TuyaVersion::ThreeFour),
+            "3.5" => Ok(TuyaVersion::ThreeFive),
             _ => Err(ErrorKind::VersionError(s.to_string())),
         }
     }
@@ -177,6 +181,10 @@ impl MessageParser {
     }
 
     pub fn encode(&self, mes: &Message, encrypt: bool) -> Result<Vec<u8>> {
+        if self.version == TuyaVersion::ThreeFive {
+            return self.encode_35(mes, encrypt);
+        }
+
         let mut encoded: Vec<u8> = vec![];
         encoded.extend_from_slice(&*PREFIX_BYTES);
         match mes.seq_nr {
@@ -199,6 +207,7 @@ impl MessageParser {
                 // 32:hmac + uint32:suffix
                 32 + size_of::<u32>()
             }
+            TuyaVersion::ThreeFive => unreachable!("handled in encode_35"),
         };
         encoded.extend(
             (payload.len() as u32 + msg_end_size as u32 + ret_len)
@@ -217,6 +226,7 @@ impl MessageParser {
                 encoded.extend(self.cipher.hmac(&encoded)?.iter());
                 // encoded.extend(self.cipher.hmac(&encoded)?.iter().flat_map(|b| b.to_be_bytes()));
             }
+            TuyaVersion::ThreeFive => unreachable!("handled in encode_35"),
         }
         encoded.extend_from_slice(&*SUFFIX_BYTES);
         debug!(
@@ -237,6 +247,12 @@ impl MessageParser {
                     mes.payload.clone().try_into()
                 }
             }
+            TuyaVersion::ThreeFive => match mes.command {
+                Some(ref cmd) if cmd.needs_protocol_header() => {
+                    self.create_payload_with_header(mes.payload.clone().try_into()?)
+                }
+                _ => mes.payload.clone().try_into(),
+            },
             TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => match mes.command {
                 Some(ref cmd) if cmd.needs_protocol_header() => {
                     self.create_payload_with_header(mes.payload.clone().try_into()?)
@@ -277,11 +293,25 @@ impl MessageParser {
 
                 debug!("Payload encrypted: {}", hex::encode(&payload_with_header));
             }
+            TuyaVersion::ThreeFive => {
+                let payload = {
+                    let mut bytes = self.version.as_bytes().to_vec();
+                    bytes.extend([0; 12]);
+                    bytes.extend(payload);
+                    bytes
+                };
+
+                payload_with_header.extend(payload);
+            }
         }
         Ok(payload_with_header)
     }
 
     pub fn parse(&self, buf: &[u8]) -> Result<Vec<Message>> {
+        if self.version == TuyaVersion::ThreeFive || buf.starts_with(&*PREFIX_BYTES_35) {
+            return self.parse_messages_35(buf);
+        }
+
         let (buf, messages) = self.parse_messages(buf).map_err(|err| match err {
             nom::Err::Error(e) => ErrorKind::ParseError(e.code),
             nom::Err::Incomplete(_) => ErrorKind::ParsingIncomplete,
@@ -298,17 +328,20 @@ impl MessageParser {
         let crc_size = match self.version {
             TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => size_of::<u32>(),
             TuyaVersion::ThreeFour => 32,
+            TuyaVersion::ThreeFive => unreachable!("handled in parse_messages_35"),
         };
 
         // TODO: can this be statically initialized??
-        let be_u32_minus4 = map(be_u32, |n: u32| n - 4);
-        let (buf, vec) = many1(tuple((
-            tag(*PREFIX_BYTES),
+        // saturating: a garbled length field < 4 must not underflow/panic.
+        let be_u32_minus4 = map(be_u32, |n: u32| n.saturating_sub(4));
+        let (buf, vec) = many1((
+            tag(&PREFIX_BYTES[..]),
             be_u32,
             be_u32,
             length_data(be_u32_minus4),
-            tag(*SUFFIX_BYTES),
-        )))(orig_buf)?;
+            tag(&SUFFIX_BYTES[..]),
+        ))
+        .parse(orig_buf)?;
         let mut messages = vec![];
         let mut msg_offset = 0_usize; // Track position of each message in orig_buf
         for (prefix, seq_nr, command, recv_data_orig, suffix) in vec {
@@ -317,15 +350,23 @@ impl MessageParser {
             let msg_size = prefix.len() + 4 + 4 + 4 + recv_data_orig.len() + suffix.len();
 
             // check if the recv_data contains a return code
-            let (recv_data, maybe_retcode) = peek(be_u32)(recv_data_orig)?;
+            let (recv_data, maybe_retcode) = peek(be_u32).parse(recv_data_orig)?;
             let (recv_data, ret_code, _ret_len) = if maybe_retcode & 0xFFFF_FF00 == 0 {
                 // Has a return code
-                let (recv_data, ret_code) = recognize(be_u32)(recv_data)?;
+                let (recv_data, ret_code) = recognize(be_u32).parse(recv_data)?;
                 (recv_data, Some(ret_code[3]), 4_usize)
             } else {
                 // Has no return code
                 (recv_data, None, 0_usize)
             };
+            // A truncated/garbled message can declare less data than the
+            // checksum needs; split_at would panic on it (also in release).
+            if recv_data.len() < crc_size {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    recv_data,
+                    nom::error::ErrorKind::Eof,
+                )));
+            }
             let (payload, rc) = recv_data.split_at(recv_data.len() - crc_size);
 
             match self.version {
@@ -371,6 +412,7 @@ impl MessageParser {
                         )));
                     }
                 }
+                TuyaVersion::ThreeFive => unreachable!("handled in parse_messages_35"),
             }
 
             let command = FromPrimitive::from_u32(command).or(None);
@@ -409,6 +451,95 @@ impl MessageParser {
                 }
             }
         }
+    }
+
+    fn encode_35(&self, mes: &Message, encrypt: bool) -> Result<Vec<u8>> {
+        let command = mes.command.clone().ok_or(ErrorKind::CommandTypeMissing)?;
+        let seq_nr = mes.seq_nr.unwrap_or(0);
+        let payload = self.create_payload_header(mes, encrypt)?;
+        let mut plaintext = Vec::with_capacity(payload.len() + 4);
+        if let Some(ret_code) = mes.ret_code {
+            plaintext.extend_from_slice(&(ret_code as u32).to_be_bytes());
+        }
+        plaintext.extend_from_slice(&payload);
+        let payload_len = plaintext.len() as u32 + 28;
+
+        let mut header = Vec::with_capacity(18);
+        header.extend_from_slice(&*PREFIX_BYTES_35);
+        header.extend_from_slice(&0_u16.to_be_bytes());
+        header.extend_from_slice(&seq_nr.to_be_bytes());
+        header.extend_from_slice(&command.to_u32().unwrap_or_default().to_be_bytes());
+        header.extend_from_slice(&payload_len.to_be_bytes());
+
+        let aad = &header[4..18];
+        let encrypted = self
+            .cipher
+            .encrypt_gcm_with_random_iv(&plaintext, Some(aad))?;
+
+        let mut encoded =
+            Vec::with_capacity(header.len() + encrypted.len() + SUFFIX_BYTES_35.len());
+        encoded.extend(header);
+        encoded.extend(encrypted);
+        encoded.extend_from_slice(&*SUFFIX_BYTES_35);
+        Ok(encoded)
+    }
+
+    fn parse_messages_35(&self, buf: &[u8]) -> Result<Vec<Message>> {
+        let mut offset = 0;
+        let mut messages = Vec::new();
+
+        while offset < buf.len() {
+            let remaining = &buf[offset..];
+            if remaining.len() < 26 || !remaining.starts_with(&*PREFIX_BYTES_35) {
+                return Err(ErrorKind::ParsingIncomplete);
+            }
+
+            let suffix_offset = remaining
+                .windows(SUFFIX_BYTES_35.len())
+                .position(|window| window == *SUFFIX_BYTES_35)
+                .ok_or(ErrorKind::ParsingIncomplete)?;
+            let packet_end = suffix_offset + SUFFIX_BYTES_35.len();
+            let packet = &remaining[..packet_end];
+
+            // A stray suffix inside garbled data can terminate the packet
+            // before the fixed header fits; the indexing below would panic.
+            if packet.len() < 26 {
+                return Err(ErrorKind::ParsingIncomplete);
+            }
+
+            let seq_nr = u32::from_be_bytes(
+                packet[6..10]
+                    .try_into()
+                    .map_err(|_| ErrorKind::ParsingIncomplete)?,
+            );
+            let command_u32 = u32::from_be_bytes(
+                packet[10..14]
+                    .try_into()
+                    .map_err(|_| ErrorKind::ParsingIncomplete)?,
+            );
+            let declared_length = u32::from_be_bytes(
+                packet[14..18]
+                    .try_into()
+                    .map_err(|_| ErrorKind::ParsingIncomplete)?,
+            ) as usize;
+            let actual_length = packet.len() - PREFIX_BYTES_35.len() - SUFFIX_BYTES_35.len();
+            if actual_length < declared_length + 4 {
+                return Err(ErrorKind::ParsingIncomplete);
+            }
+
+            let command = FromPrimitive::from_u32(command_u32).or(None);
+            let payload = self.try_decrypt(&packet[4..packet.len() - 4], &command);
+            messages.push(Message {
+                payload,
+                command,
+                seq_nr: Some(seq_nr),
+                ret_code: None,
+            });
+
+            offset += packet_end;
+        }
+
+        Ok(messages)
     }
 }
 
@@ -457,7 +588,82 @@ mod tests {
         let version4 = TuyaVersion::from_str("3.4").unwrap();
         assert_eq!(version4, TuyaVersion::ThreeFour);
 
-        assert!(TuyaVersion::from_str("3.5").is_err());
+        let version5 = TuyaVersion::from_str("3.5").unwrap();
+        assert_eq!(version5, TuyaVersion::ThreeFive);
+    }
+
+    #[test]
+    fn test_encode_and_parse_roundtrip_with_version_three_five() {
+        let payload =
+            Payload::String(r#"{"protocol":4,"t":1,"data":{"dps":{"101":true}}}"#.to_string());
+        let mes = Message {
+            command: Some(CommandType::Status),
+            payload,
+            seq_nr: Some(7),
+            ret_code: Some(0),
+        };
+        let parser =
+            MessageParser::create(TuyaVersion::ThreeFive, Some("0123456789ABCDEF".to_string()))
+                .unwrap();
+        let encoded = parser.encode(&mes, true).unwrap();
+        let parsed = parser.parse(&encoded).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].seq_nr, Some(7));
+        assert_eq!(parsed[0].command, Some(CommandType::Status));
+        assert_eq!(
+            parsed[0].payload,
+            Payload::String(r#"{"dps":{"101":true},"t":1}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn test_encode_and_parse_three_five_raw_session_payload() {
+        let payload: Vec<u8> = (0..48).collect();
+        let mes = Message {
+            command: Some(CommandType::SessKeyNegResp),
+            payload: Payload::Raw(payload.clone()),
+            seq_nr: Some(3),
+            ret_code: None,
+        };
+        let parser =
+            MessageParser::create(TuyaVersion::ThreeFive, Some("0123456789ABCDEF".to_string()))
+                .unwrap();
+        let encoded = parser.encode(&mes, true).unwrap();
+        let parsed = parser.parse(&encoded).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].seq_nr, Some(3));
+        assert_eq!(parsed[0].command, Some(CommandType::SessKeyNegResp));
+        assert_eq!(parsed[0].payload, Payload::Raw(payload));
+    }
+
+    #[test]
+    fn test_encode_and_parse_three_five_dp_query_new_without_protocol_header() {
+        let expected = Payload::Struct(PayloadStruct {
+            gw_id: Some("abc".to_string()),
+            dev_id: "abc".to_string(),
+            uid: None,
+            t: None,
+            dp_id: None,
+            dps: None,
+        });
+        let mes = Message {
+            command: Some(CommandType::DpQueryNew),
+            payload: Payload::String(r#"{"gwId":"abc","devId":"abc"}"#.to_string()),
+            seq_nr: Some(11),
+            ret_code: None,
+        };
+        let parser =
+            MessageParser::create(TuyaVersion::ThreeFive, Some("0123456789ABCDEF".to_string()))
+                .unwrap();
+        let encoded = parser.encode(&mes, true).unwrap();
+        let parsed = parser.parse(&encoded).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].seq_nr, Some(11));
+        assert_eq!(parsed[0].command, Some(CommandType::DpQueryNew));
+        assert_eq!(parsed[0].payload, expected);
     }
 
     #[test]
