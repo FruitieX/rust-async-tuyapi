@@ -332,7 +332,8 @@ impl MessageParser {
         };
 
         // TODO: can this be statically initialized??
-        let be_u32_minus4 = map(be_u32, |n: u32| n - 4);
+        // saturating: a garbled length field < 4 must not underflow/panic.
+        let be_u32_minus4 = map(be_u32, |n: u32| n.saturating_sub(4));
         let (buf, vec) = many1((
             tag(&PREFIX_BYTES[..]),
             be_u32,
@@ -358,6 +359,14 @@ impl MessageParser {
                 // Has no return code
                 (recv_data, None, 0_usize)
             };
+            // A truncated/garbled message can declare less data than the
+            // checksum needs; split_at would panic on it (also in release).
+            if recv_data.len() < crc_size {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    recv_data,
+                    nom::error::ErrorKind::Eof,
+                )));
+            }
             let (payload, rc) = recv_data.split_at(recv_data.len() - crc_size);
 
             match self.version {
@@ -491,6 +500,12 @@ impl MessageParser {
                 .ok_or(ErrorKind::ParsingIncomplete)?;
             let packet_end = suffix_offset + SUFFIX_BYTES_35.len();
             let packet = &remaining[..packet_end];
+
+            // A stray suffix inside garbled data can terminate the packet
+            // before the fixed header fits; the indexing below would panic.
+            if packet.len() < 26 {
+                return Err(ErrorKind::ParsingIncomplete);
+            }
 
             let seq_nr = u32::from_be_bytes(
                 packet[6..10]
