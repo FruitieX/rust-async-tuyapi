@@ -8,11 +8,11 @@
 use crate::error::ErrorKind;
 use crate::mesparse::{CommandType, Message, MessageParser, TuyaVersion};
 use crate::{ControlNewPayload, ControlNewPayloadData, Payload, PayloadStruct, Result};
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockEncrypt, KeyInit};
+use aes::cipher::{Block, BlockEncrypt, Key, KeyInit};
 use aes::Aes128;
 use log::{debug, info};
-use rand::Rng;
+use rand::RngExt;
+use std::convert::TryInto;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -119,8 +119,8 @@ impl TuyaDevice {
             tcp_write_half,
         };
 
-        // Tuya protocol v3.4 requires session key negotiation
-        if self.version == TuyaVersion::ThreeFour {
+        // Tuya protocol v3.4/v3.5 requires session key negotiation
+        if matches!(self.version, TuyaVersion::ThreeFour | TuyaVersion::ThreeFive) {
             // Generate random 16-byte nonce for session key negotiation
             let local_nonce: [u8; 16] = rand::rng().random();
             let local_key = self.key.clone().ok_or(ErrorKind::MissingKey)?;
@@ -175,21 +175,36 @@ impl TuyaDevice {
             debug!("nonce_xor: {}", hex::encode(&nonce_xor));
             debug!("using local_key for crypter: {}", hex::encode(&local_key));
 
-            let local_key_arr = GenericArray::from_slice(local_key.as_bytes());
-            let cipher = Aes128::new(local_key_arr);
+            let session_key = match self.version {
+                TuyaVersion::ThreeFour => {
+                    let key_bytes: [u8; 16] = local_key
+                        .as_bytes()
+                        .try_into()
+                        .map_err(|_| ErrorKind::KeyLength(local_key.len()))?;
+                    let key: Key<Aes128> = key_bytes.into();
+                    let cipher = Aes128::new(&key);
 
-            let mut nonce_xor = nonce_xor;
-            let block = GenericArray::from_mut_slice(nonce_xor.as_mut_slice());
-            cipher.encrypt_block(block);
+                    let block_bytes: [u8; 16] = nonce_xor
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| ErrorKind::InvalidRemoteKey)?;
+                    let mut block: Block<Aes128> = block_bytes.into();
+                    cipher.encrypt_block(&mut block);
 
-            debug!("session key: {}", hex::encode(&block));
+                    debug!("session key: {}", hex::encode(block));
 
-            // Known v3.4 bug: if first byte of session key is 0x00, device considers it invalid
-            // This causes "Error 914: Check device key or version" and connection failures
-            // https://github.com/jasonacox/tinytuya/discussions/260#:~:text=Bug%2Fquirk%3A%20If%20the%20first%20byte%20of%20the%20resulting%20session%20key%20is%200x00%20then%20the%20device%20will%20not%20consider%20it%20valid%20and%20you%20will%20need%20to%20restart%20the%20negotiation%20over
-            if block[0] == 0x00 {
-                return Err(ErrorKind::InvalidSessionKey);
-            }
+                    // Known v3.4 bug: if first byte of session key is 0x00, device considers it invalid
+                    // This causes "Error 914: Check device key or version" and connection failures
+                    // https://github.com/jasonacox/tinytuya/discussions/260#:~:text=Bug%2Fquirk%3A%20If%20the%20first%20byte%20of%20the%20resulting%20session%20key%20is%200x00%20then%20the%20device%20will%20not%20consider%20it%20valid%20and%20you%20will%20need%20to%20restart%20the%20negotiation%20over
+                    if block[0] == 0x00 {
+                        return Err(ErrorKind::InvalidSessionKey);
+                    }
+
+                    block.to_vec()
+                }
+                TuyaVersion::ThreeFive => connection.mp.cipher.encrypt_gcm_with_iv(&nonce_xor, &local_nonce)?,
+                TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => unreachable!("session negotiation only applies to 3.4/3.5"),
+            };
 
             // Session key is valid, now send SessKeyNegFinish to complete the handshake
             let rkey_hmac = connection.mp.cipher.hmac(remote_nonce)?;
@@ -217,7 +232,7 @@ impl TuyaDevice {
                 )
                 .await?;
 
-            connection.mp.cipher.set_key(block.to_vec())
+            connection.mp.cipher.set_key(session_key)
         }
 
         let mp = connection.mp.clone();
@@ -260,7 +275,7 @@ impl TuyaDevice {
         let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
         let command = match self.version {
             TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => CommandType::Control,
-            TuyaVersion::ThreeFour => CommandType::ControlNew,
+            TuyaVersion::ThreeFour | TuyaVersion::ThreeFive => CommandType::ControlNew,
         };
         let mes = Message::new(tuya_payload, command);
         connection.send(&mes).await?;
@@ -272,7 +287,7 @@ impl TuyaDevice {
         let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
         let command = match self.version {
             TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => CommandType::Control,
-            TuyaVersion::ThreeFour => CommandType::ControlNew,
+            TuyaVersion::ThreeFour | TuyaVersion::ThreeFive => CommandType::ControlNew,
         };
 
         let current_time = SystemTime::now()
@@ -291,7 +306,7 @@ impl TuyaDevice {
                 dp_id: None,
                 dps: Some(dps),
             }),
-            TuyaVersion::ThreeFour => Payload::ControlNewStruct(ControlNewPayload {
+            TuyaVersion::ThreeFour | TuyaVersion::ThreeFive => Payload::ControlNewStruct(ControlNewPayload {
                 protocol: 5,
                 t: current_time,
                 data: ControlNewPayloadData { dps },
@@ -307,7 +322,7 @@ impl TuyaDevice {
         let connection = self.connection.as_mut().ok_or(ErrorKind::NotConnected)?;
         let command = match self.version {
             TuyaVersion::ThreeOne | TuyaVersion::ThreeThree => CommandType::DpQuery,
-            TuyaVersion::ThreeFour => CommandType::DpQueryNew,
+            TuyaVersion::ThreeFour | TuyaVersion::ThreeFive => CommandType::DpQueryNew,
         };
         let mes = Message::new(tuya_payload, command);
         connection.send(&mes).await?;

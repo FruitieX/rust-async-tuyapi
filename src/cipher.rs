@@ -1,8 +1,15 @@
 use aes::cipher::block_padding::Pkcs7;
+use aes_gcm::{
+    aead::{consts::U12, AeadInPlace},
+    Aes128Gcm, KeyInit as AeadKeyInit, Nonce, Tag,
+};
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::convert::TryInto;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::error::ErrorKind;
 use crate::mesparse::TuyaVersion;
 use crate::Result;
 
@@ -21,7 +28,9 @@ fn maybe_strip_header(version: &TuyaVersion, data: &[u8]) -> Vec<u8> {
     if data.len() > 3 && &data[..3] == version.as_bytes() {
         match version {
             TuyaVersion::ThreeOne => data.split_at(19).1.to_vec(),
-            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => data.split_at(15).1.to_vec(),
+            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour | TuyaVersion::ThreeFive => {
+                data.split_at(15).1.to_vec()
+            }
         }
     } else {
         data.to_vec()
@@ -43,6 +52,10 @@ impl TuyaCipher {
     pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
         use aes::cipher::{BlockEncryptMut, KeyInit};
 
+        if self.version == TuyaVersion::ThreeFive {
+            return self.encrypt_gcm_with_random_iv(data, None);
+        }
+
         let ct = Aes128EcbEnc::new_from_slice(self.key.as_slice())?
             .encrypt_padded_vec_mut::<Pkcs7>(data);
 
@@ -51,12 +64,18 @@ impl TuyaCipher {
                 .encode(ct)
                 .as_bytes()
                 .to_vec()),
-            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => Ok(ct.to_vec()),
+            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour | TuyaVersion::ThreeFive => {
+                Ok(ct.to_vec())
+            }
         }
     }
 
     pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
         use aes::cipher::{BlockDecryptMut, KeyInit};
+
+        if self.version == TuyaVersion::ThreeFive {
+            return self.decrypt_gcm_packet(data);
+        }
 
         // Different header size in version 3.1 and 3.3
         let data = maybe_strip_header(&self.version, data);
@@ -64,7 +83,9 @@ impl TuyaCipher {
         // 3.1 is base64 encoded, 3.3 is not
         let data = match self.version {
             TuyaVersion::ThreeOne => base64::engine::general_purpose::STANDARD.decode(&data)?,
-            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour => data.to_vec(),
+            TuyaVersion::ThreeThree | TuyaVersion::ThreeFour | TuyaVersion::ThreeFive => {
+                data.to_vec()
+            }
         };
 
         let pt = Aes128EcbDec::new_from_slice(self.key.as_slice())?
@@ -91,10 +112,136 @@ impl TuyaCipher {
     }
 
     pub fn hmac(&self, payload: &[u8]) -> Result<Vec<u8>> {
-        let mut mac = HmacSha256::new_from_slice(&self.key)?;
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.key)?;
         mac.update(payload);
         let result = mac.finalize();
         Ok(result.into_bytes().to_vec())
+    }
+
+    pub fn encrypt_gcm_with_iv(&self, data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
+        let cipher = self.gcm_cipher()?;
+        let nonce = Self::nonce_from_iv(iv)?;
+        let mut buffer = data.to_vec();
+        let _tag = cipher
+            .encrypt_in_place_detached(&nonce, b"", &mut buffer)
+            .map_err(|_| ErrorKind::CipherError("aes-gcm encryption failed"))?;
+        Ok(buffer)
+    }
+
+    pub fn encrypt_gcm_with_random_iv(&self, data: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+        let iv = Self::timestamp_iv();
+        self.encrypt_gcm_with_aad_and_iv(data, aad.unwrap_or_default(), &iv)
+    }
+
+    pub fn encrypt_gcm_with_aad_and_iv(
+        &self,
+        data: &[u8],
+        aad: &[u8],
+        iv: &[u8],
+    ) -> Result<Vec<u8>> {
+        let cipher = self.gcm_cipher()?;
+        let nonce = Self::nonce_from_iv(iv)?;
+        let mut buffer = data.to_vec();
+        let tag = cipher
+            .encrypt_in_place_detached(&nonce, aad, &mut buffer)
+            .map_err(|_| ErrorKind::CipherError("aes-gcm packet encryption failed"))?;
+
+        let mut encrypted = Vec::with_capacity(iv.len() + buffer.len() + tag.len());
+        encrypted.extend_from_slice(iv);
+        encrypted.extend_from_slice(&buffer);
+        encrypted.extend_from_slice(&tag);
+        Ok(encrypted)
+    }
+
+    pub fn decrypt_gcm_packet(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let plaintext = self.decrypt_gcm_message(data)?;
+        let payload = match plaintext.get(..4) {
+            Some(prefix) if prefix[0..3] == [0, 0, 0] => &plaintext[4..],
+            _ => plaintext.as_slice(),
+        };
+        Ok(self.normalize_tuya_payload(payload))
+    }
+
+    pub fn decrypt_gcm_message(&self, data: &[u8]) -> Result<Vec<u8>> {
+        if data.len() < 42 {
+            return Err(ErrorKind::ParsingIncomplete);
+        }
+
+        let header = &data[..14];
+        let iv = &data[14..26];
+        let tag = &data[data.len() - 16..];
+        let mut ciphertext = data[26..data.len() - 16].to_vec();
+
+        let cipher = self.gcm_cipher()?;
+        let nonce = Self::nonce_from_iv(iv)?;
+        let tag_bytes: [u8; 16] = tag
+            .try_into()
+            .map_err(|_| ErrorKind::CipherError("invalid aes-gcm tag length"))?;
+        let tag: Tag = tag_bytes.into();
+        cipher
+            .decrypt_in_place_detached(&nonce, header, &mut ciphertext, &tag)
+            .map_err(|_| ErrorKind::CipherError("aes-gcm packet decryption failed"))?;
+
+        Ok(ciphertext)
+    }
+
+    fn normalize_tuya_payload(&self, payload: &[u8]) -> Vec<u8> {
+        let payload = maybe_strip_header(&self.version, payload);
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+            return payload;
+        };
+
+        let serde_json::Value::Object(mut object) = value else {
+            return payload;
+        };
+
+        let time = object.remove("t");
+        let Some(data) = object.remove("data") else {
+            return serde_json::to_vec(&serde_json::Value::Object(object)).unwrap_or(payload);
+        };
+
+        match data {
+            serde_json::Value::Object(mut inner) => {
+                if let Some(time) = time {
+                    inner.insert("t".to_string(), time);
+                }
+                serde_json::to_vec(&serde_json::Value::Object(inner)).unwrap_or(payload)
+            }
+            other => serde_json::to_vec(&other).unwrap_or(payload),
+        }
+    }
+
+    fn gcm_cipher(&self) -> Result<Aes128Gcm> {
+        Aes128Gcm::new_from_slice(self.key.as_slice())
+            .map_err(|_| ErrorKind::CipherError("invalid aes-gcm key length"))
+    }
+
+    fn nonce_from_iv(iv: &[u8]) -> Result<Nonce<U12>> {
+        let iv: [u8; 12] = iv
+            .get(..12)
+            .ok_or(ErrorKind::CipherError("invalid aes-gcm iv length"))?
+            .try_into()
+            .map_err(|_| ErrorKind::CipherError("invalid aes-gcm iv length"))?;
+        Ok(iv.into())
+    }
+
+    fn timestamp_iv() -> [u8; 12] {
+        let ticks = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis().saturating_mul(10))
+            .unwrap_or(0);
+        let text = ticks.to_string();
+        let bytes = text.as_bytes();
+        let prefix = if bytes.len() >= 12 {
+            &bytes[..12]
+        } else {
+            bytes
+        };
+
+        let mut iv = [b'0'; 12];
+        let start = 12 - prefix.len();
+        iv[start..].copy_from_slice(prefix);
+        iv
     }
 }
 
