@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/FruitieX/rust-async-tuyapi/compare/v1.2.0...v1.3.0) (2026-11-18)
+
+
+### Features
+
+* 3.5 support ([0a257ba](https://github.com/FruitieX/rust-async-tuyapi/commit/0a257ba422f70795d2dd8fbb368f6a01ebbbb401))
+
+
+### Bug Fixes
+
+* command not sent + clippy ([b4f3b0c](https://github.com/FruitieX/rust-async-tuyapi/commit/b4f3b0c31f47d251c7e13585a8ce1babda984332))
+* never panic on truncated or garbled packets ([6cd9180](https://github.com/FruitieX/rust-async-tuyapi/commit/6cd9180b296a04ef9e6751b594c6235aa79b7157))
+
 ## [1.2.0](https://github.com/FruitieX/rust-async-tuyapi/compare/v1.1.0...v1.2.0) (2025-11-28)
 
 
